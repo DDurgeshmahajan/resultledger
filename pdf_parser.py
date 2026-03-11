@@ -29,12 +29,18 @@ def abbreviate_subject(name: str, max_words: int = 4) -> str:
 def extract_subjects(pages, max_scan_pages: int = 10) -> dict:
     """
     Stage 1: Subject Identification
-    Scans the Paper List pages. The format is:
-      210241 210241 DISCRETE MATHEMATICS
-    or:
-      310241 DESIGN AND ANALYSIS OF ALGORITHMS
+    Scans the Paper List pages. Supports two code formats:
+      Old (pre-2024):  210241 210241 DISCRETE MATHEMATICS
+                       310241 DESIGN AND ANALYSIS OF ALGORITHMS
+      New (2024 NEP):  PCC-201-COM Data Structures
+                       EEM-231-COM Entrepreneurship Development
     """
     subjects = {}
+
+    # Regex for new-style alphanumeric codes: PCC-201-COM, BSC-101-BES_TW, etc.
+    new_code_re = re.compile(
+        r"^([A-Za-z][A-Za-z0-9\-]+(?:_\w+)?)\s+([A-Za-z][A-Za-z &(),\-/.']+.*)$"
+    )
 
     for page in pages[:max_scan_pages]:
         text = page.extract_text()
@@ -44,7 +50,17 @@ def extract_subjects(pages, max_scan_pages: int = 10) -> dict:
         for line in text.split("\n"):
             line = line.strip()
 
-            # Format: CODE CODE SUBJECT_NAME  (code repeated)
+            # Skip header / metadata lines
+            if not line or line.startswith("Code ") or line.startswith("continued"):
+                continue
+            if line.startswith("Savitribai") or line.startswith("Pune-"):
+                continue
+            if line.startswith("Paper List") or line.startswith("S.E."):
+                continue
+            if line.startswith("[") or line.startswith("Semester:"):
+                continue
+
+            # ── Old format: CODE CODE SUBJECT_NAME (code repeated) ──
             # e.g. "210241 210241 DISCRETE MATHEMATICS"
             match = re.match(r"(\d{6}\w*)\s+\1\s+(.+)", line)
             if match:
@@ -55,14 +71,24 @@ def extract_subjects(pages, max_scan_pages: int = 10) -> dict:
                     subjects[code] = name
                 continue
 
-            # Format: CODE SUBJECT_NAME (code NOT repeated)
-            # e.g. "310245A INTERNET OF THINGS AND EMBEDDED SYSTEMS"
-            # or   "310252 Web Technology" (mixed case)
+            # ── Old format: CODE SUBJECT_NAME (6-digit, not repeated) ──
+            # e.g. "310245A INTERNET OF THINGS"
             match2 = re.match(r"(\d{6}\w*(?:_\w+)?)\s+([A-Za-z][A-Za-z &(),\-/.']+.*)$", line)
             if match2:
                 code = match2.group(1)
                 name = match2.group(2).strip()
-                # Remove trailing page numbers or stray digits
+                name = re.sub(r"\s+\d+$", "", name)
+                name = re.sub(r"\s{2,}", " ", name)
+                if len(name) > 2 and not re.match(r"^\d+$", name):
+                    subjects[code] = name
+                continue
+
+            # ── New format: ALPHA-CODE SUBJECT_NAME ──
+            # e.g. "PCC-201-COM Data Structures"
+            match3 = new_code_re.match(line)
+            if match3:
+                code = match3.group(1)
+                name = match3.group(2).strip()
                 name = re.sub(r"\s+\d+$", "", name)
                 name = re.sub(r"\s{2,}", " ", name)
                 if len(name) > 2 and not re.match(r"^\d+$", name):
@@ -120,20 +146,26 @@ def parse_student_line(line: str) -> dict:
 def parse_subject_line(line: str, subjects: dict) -> tuple:
     """
     Parse a subject marks line. Format examples:
-      310241 * 052 * 019 --- --- --- --- --- --- --- --- 071 3 3 A+ 9 27
-      310246 --- --- --- * 020 --- --- --- * 019 --- --- 039 2 2 A+ 9 18
-      310249 --- --- * 039 --- --- --- --- --- --- --- 039 1 1 A+ 9 9
-      310250B --- --- --- --- --- --- --- --- --- --- *"AC" 0 0 AC !
-      310241 * AAA * 012 --- --- --- --- --- --- --- --- 012 FFF 3 0 F 0 0
+      Old: 310241 * 052 * 019 --- --- --- --- --- --- --- --- 071 3 3 A+ 9 27
+      New: PCC-201-COM * 028 * 046 --- --- --- --- --- --- --- --- --- 074 3 3 A 8 24
 
     Returns (subject_code, total_marks, grade) or None.
     """
-    # Match subject code at start (6 digits + optional suffix like A, B, _PR, _TW)
-    match = re.match(r"(\d{6}\w*(?:_\w+)?)\s+(.+)", line)
+    # Match subject code at start:
+    #   Old: 6 digits + optional suffix (310241, 310250B, 310241_PR)
+    #   New: alphanumeric with hyphens (PCC-201-COM, CEP-241-COM_TW)
+    match = re.match(r"([A-Za-z0-9][A-Za-z0-9\-]*(?:_\w+)?)\s+(.+)", line)
     if not match:
         return None
-
+    
     code = match.group(1)
+    # Verify this looks like a subject code, not random text
+    # Must contain at least one digit and either be all-digits or contain a hyphen
+    if not re.search(r"\d", code):
+        return None
+    if not (re.match(r"\d{6}", code) or "-" in code):
+        return None
+
     rest = match.group(2).strip()
 
     # Skip *"AC" lines (audit course / non-countable)
@@ -304,8 +336,10 @@ def parse_students(pdf_path: str) -> pd.DataFrame:
                     continue
 
                 # ── Subject marks line ──
-                subj_match = re.match(r"\d{6}", line)
-                if subj_match:
+                # Old format: starts with 6-digit code (310241)
+                # New format: starts with alpha-code (PCC-201-COM)
+                subj_match = re.match(r"(?:\d{6}|[A-Z][A-Za-z0-9\-]+)", line)
+                if subj_match and not line.startswith("SAVITRIBAI") and not line.startswith("SEMESTER") and not line.startswith("RESULT") and not line.startswith("SGPA") and not line.startswith("Page ") and not line.startswith("Branch") and not line.startswith("College") and not line.startswith("PunCode") and not line.startswith("PUNE") and not line.startswith("MEDIUM"):
                     parsed = parse_subject_line(line, subjects)
                     if parsed:
                         code, total, grade = parsed
