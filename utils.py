@@ -4,17 +4,19 @@ Designed by Durgesh Mahajan
 """
 
 import os
+import io
 from openpyxl import load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
 
-def brand_excel(filepath: str) -> None:
+def brand_excel(filepath_or_stream):
     """
     Apply professional branding and formatting to the output Excel file.
     Adds a header row with branding, styles all columns, and auto-sizes.
+    Supports both file paths and stream objects.
     """
-    wb = load_workbook(filepath)
+    wb = load_workbook(filepath_or_stream)
     ws = wb.active
 
     # --- Insert branding rows at the top ---
@@ -31,7 +33,7 @@ def brand_excel(filepath: str) -> None:
     # Row 2: Subtitle / Credit
     ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=ws.max_column)
     subtitle_cell = ws.cell(row=2, column=1)
-    subtitle_cell.value = "Extraction Tool "
+    subtitle_cell.value = "Extraction Tool by durgesh mahajan "
     subtitle_cell.font = Font(name="Calibri", size=11, italic=True, color="FFFFFF")
     subtitle_cell.fill = PatternFill(start_color="283593", end_color="283593", fill_type="solid")
     subtitle_cell.alignment = Alignment(horizontal="center", vertical="center")
@@ -93,7 +95,14 @@ def brand_excel(filepath: str) -> None:
     # Freeze panes below the header
     ws.freeze_panes = f"A{header_row + 1}"
 
-    wb.save(filepath)
+    if hasattr(filepath_or_stream, 'write'):
+        out_stream = io.BytesIO()
+        wb.save(out_stream)
+        out_stream.seek(0)
+        return out_stream
+    else:
+        wb.save(filepath_or_stream)
+        return None
 
 
 def get_output_filename(original_filename: str) -> str:

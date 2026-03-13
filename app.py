@@ -8,7 +8,7 @@ POST /extract  →  multipart/form-data (file: ledger.pdf)  →  <pdf_name>.xlsx
 from flask import Flask, request, send_file, jsonify
 from flask_cors import CORS
 import os
-import uuid
+import io
 import logging
 from pdf_parser import parse_students
 from utils import brand_excel, get_output_filename
@@ -22,12 +22,6 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__, static_folder="static", static_url_path="")
 CORS(app)
-
-UPLOAD_FOLDER = "uploads"
-OUTPUT_FOLDER = "outputs"
-
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
 ALLOWED_EXTENSIONS = {"pdf"}
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
@@ -65,53 +59,36 @@ def extract():
 
     # --- Processing ---
     try:
-        # Save with unique name to avoid conflicts
-        unique_id = uuid.uuid4().hex[:8]
-        safe_filename = f"{unique_id}_{file.filename}"
-        pdf_path = os.path.join(UPLOAD_FOLDER, safe_filename)
-        file.save(pdf_path)
+        logger.info(f"Processing memory stream for: {file.filename}")
+        pdf_bytes = io.BytesIO(file.read())
 
-        logger.info(f"Processing file: {file.filename}")
-
-        # Parse the PDF
-        df = parse_students(pdf_path)
+        # Parse the PDF directly from memory stream
+        df = parse_students(pdf_bytes)
 
         if df.empty:
-            # Cleanup
-            os.remove(pdf_path)
             return jsonify({
                 "error": "No student records found in the PDF. "
                          "Please ensure this is a valid SPPU result ledger."
             }), 422
 
-        # Generate output Excel
+        # Generate output Excel in memory
         output_name = get_output_filename(file.filename)
-        output_path = os.path.join(OUTPUT_FOLDER, f"{unique_id}_{output_name}")
-        df.to_excel(output_path, index=False, engine="openpyxl")
+        output_stream = io.BytesIO()
+        df.to_excel(output_stream, index=False, engine="openpyxl")
+        output_stream.seek(0)
 
-        # Apply branding
-        brand_excel(output_path)
+        # Apply branding to the stream
+        final_stream = brand_excel(output_stream)
 
         logger.info(f"Successfully extracted {len(df)} students → {output_name}")
 
-        # Send file and cleanup
-        response = send_file(
-            output_path,
+        # Send file from memory
+        return send_file(
+            final_stream,
             as_attachment=True,
             download_name=output_name,
             mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-
-        # Cleanup uploaded PDF after response (deferred)
-        @response.call_on_close
-        def cleanup():
-            try:
-                os.remove(pdf_path)
-                os.remove(output_path)
-            except OSError:
-                pass
-
-        return response
 
     except Exception as e:
         logger.exception("Error processing PDF")
